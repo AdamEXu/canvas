@@ -1,3 +1,4 @@
 target/
 SPEC.md
 *.canvas
+.DS_Store

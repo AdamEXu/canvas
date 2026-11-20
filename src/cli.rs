@@ -7,7 +7,7 @@ const HELP: &str = "canvas: vector painting server and CLI
 
 usage:
   canvas [serve] [--port N] [--bind ADDR] [file.canvas] [--no-open]
-  canvas stroke [--color #hex] [--width N] [--eraser] x,y x,y ...
+  canvas stroke [--color #hex] [--width N] [--opacity 0..1] [--eraser] x,y x,y ...
   canvas clear | undo | redo | state | history
   canvas resize [--left N] [--top N] [--right N] [--bottom N]
   canvas new [--width N] [--height N] [--background #hex]
@@ -155,6 +155,7 @@ pub fn run(raw: Vec<String>) -> Result<(), String> {
                 "width": a.num("width")?.unwrap_or(4.0),
                 "points": pts,
                 "eraser": a.has("eraser"),
+                "opacity": a.num("opacity")?.unwrap_or(1.0),
             }))?;
         }
         "clear" | "undo" | "redo" => act(json!({"type": cmd}))?,

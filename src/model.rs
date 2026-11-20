@@ -5,7 +5,7 @@ pub const MAX_SIZE: i64 = 16384;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Op {
-    Stroke { color: [u8; 3], width: u32, points: Vec<(i32, i32)>, eraser: bool },
+    Stroke { color: [u8; 3], width: u32, points: Vec<(i32, i32)>, eraser: bool, opacity: u8 },
     Resize { left: i32, top: i32, right: i32, bottom: i32 },
     Clear,
     Undo,
@@ -29,6 +29,7 @@ pub struct Doc {
 
 pub struct SceneStroke {
     pub color: [u8; 3],
+    pub opacity: u8,
     pub width: u32,
     pub points: Vec<(i32, i32)>,
 }
@@ -47,6 +48,9 @@ fn def_color() -> String {
 fn def_width() -> f64 {
     4.0
 }
+fn def_opacity() -> f64 {
+    1.0
+}
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -60,6 +64,8 @@ enum In {
         points: Vec<[f64; 2]>,
         #[serde(default)]
         eraser: bool,
+        #[serde(default = "def_opacity")]
+        opacity: f64,
     },
     Resize {
         #[serde(default)]
@@ -98,11 +104,12 @@ pub fn color_hex(c: [u8; 3]) -> String {
 pub fn parse_op(v: Value) -> Result<Op, String> {
     let i: In = serde_json::from_value(v).map_err(|e| e.to_string())?;
     Ok(match i {
-        In::Stroke { color, width, points, eraser } => Op::Stroke {
+        In::Stroke { color, width, points, eraser, opacity } => Op::Stroke {
             color: parse_color(&color).ok_or("bad color")?,
             width: q(width).clamp(1, 16 * 4096) as u32,
             points: points.iter().map(|p| (q(p[0]), q(p[1]))).collect(),
             eraser,
+            opacity: (opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
         },
         In::Resize { left, top, right, bottom } => Op::Resize {
             left: left.round() as i32,
@@ -118,12 +125,13 @@ pub fn parse_op(v: Value) -> Result<Op, String> {
 
 pub fn action_json(a: &Action) -> Value {
     match &a.op {
-        Op::Stroke { color, width, points, eraser } => json!({
+        Op::Stroke { color, width, points, eraser, opacity } => json!({
             "type": "stroke",
             "color": color_hex(*color),
             "width": *width as f64 / 16.0,
             "points": points.iter().map(|p| [p.0 as f64 / 16.0, p.1 as f64 / 16.0]).collect::<Vec<_>>(),
             "eraser": eraser,
+            "opacity": *opacity as f64 / 255.0,
             "t": a.t,
         }),
         Op::Resize { left, top, right, bottom } => json!({
@@ -172,8 +180,9 @@ impl Doc {
         let mut strokes: Vec<SceneStroke> = Vec::new();
         for &i in &eff {
             match &self.actions[i].op {
-                Op::Stroke { color, width, points, eraser } => strokes.push(SceneStroke {
+                Op::Stroke { color, width, points, eraser, opacity } => strokes.push(SceneStroke {
                     color: if *eraser { self.background } else { *color },
+                    opacity: *opacity,
                     width: *width,
                     points: points.clone(),
                 }),

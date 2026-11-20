@@ -1,7 +1,7 @@
 use crate::model::{Action, Doc, Op};
 
 const MAGIC: &[u8; 4] = b"CNVS";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 
 fn put(out: &mut Vec<u8>, mut v: u64) {
     loop {
@@ -59,8 +59,10 @@ pub fn encode(doc: &Doc) -> Vec<u8> {
     let mut last_t = 0i64;
     for a in &doc.actions {
         let ty = match &a.op {
-            Op::Stroke { eraser: false, .. } => 0,
-            Op::Stroke { eraser: true, .. } => 1,
+            Op::Stroke { eraser: false, opacity: 255, .. } => 0,
+            Op::Stroke { eraser: true, opacity: 255, .. } => 1,
+            Op::Stroke { eraser: false, .. } => 6,
+            Op::Stroke { eraser: true, .. } => 7,
             Op::Resize { .. } => 2,
             Op::Clear => 3,
             Op::Undo => 4,
@@ -70,7 +72,10 @@ pub fn encode(doc: &Doc) -> Vec<u8> {
         put(&mut p, zz(a.t as i64 - last_t));
         last_t = a.t as i64;
         match &a.op {
-            Op::Stroke { color, width, points, .. } => {
+            Op::Stroke { color, width, points, opacity, .. } => {
+                if *opacity < 255 {
+                    p.push(*opacity);
+                }
                 p.extend_from_slice(color);
                 put(&mut p, *width as u64);
                 put(&mut p, points.len() as u64);
@@ -100,7 +105,8 @@ pub fn decode(bytes: &[u8]) -> Result<Doc, String> {
     if bytes.len() < 5 || &bytes[..4] != MAGIC {
         return Err("not a .canvas file".into());
     }
-    if bytes[4] != VERSION {
+    let version = bytes[4];
+    if !(1..=VERSION).contains(&version) {
         return Err(format!("unsupported version {}", bytes[4]));
     }
     let p = miniz_oxide::inflate::decompress_to_vec_with_limit(&bytes[5..], 1 << 30)
@@ -116,7 +122,8 @@ pub fn decode(bytes: &[u8]) -> Result<Doc, String> {
         let ty = r.byte()?;
         last_t += r.svar()?;
         let op = match ty {
-            0 | 1 => {
+            0 | 1 | 6 | 7 if ty < 6 || version >= 2 => {
+                let opacity = if ty >= 6 { r.byte()? } else { 255 };
                 let color = [r.byte()?, r.byte()?, r.byte()?];
                 let width = r.var()? as u32;
                 let count = r.var()? as usize;
@@ -127,7 +134,7 @@ pub fn decode(bytes: &[u8]) -> Result<Doc, String> {
                     py += r.svar()?;
                     points.push((px as i32, py as i32));
                 }
-                Op::Stroke { color, width, points, eraser: ty == 1 }
+                Op::Stroke { color, width, points, eraser: ty % 2 == 1, opacity }
             }
             2 => Op::Resize {
                 left: r.svar()? as i32,
@@ -162,12 +169,17 @@ mod tests {
                     width: 65,
                     points: vec![(0, 0), (-17, 33), (160000, -5), (i32::MAX, i32::MIN)],
                     eraser: false,
+                    opacity: 255,
                 },
+            },
+            Action {
+                t: 1_700_000_000_100,
+                op: Op::Stroke { color: [9, 8, 7], width: 32, points: vec![(1, 1), (40, 2)], eraser: false, opacity: 128 },
             },
             Action { t: 1_700_000_000_500, op: Op::Resize { left: -10, top: 5, right: 0, bottom: 100 } },
             Action {
                 t: 1_699_999_999_000,
-                op: Op::Stroke { color: [255, 255, 255], width: 16, points: vec![(5, 5)], eraser: true },
+                op: Op::Stroke { color: [255, 255, 255], width: 16, points: vec![(5, 5)], eraser: true, opacity: 0 },
             },
             Action { t: 1_700_000_001_000, op: Op::Clear },
             Action { t: 1_700_000_002_000, op: Op::Undo },
@@ -175,5 +187,57 @@ mod tests {
         ];
         let back = decode(&encode(&d)).unwrap();
         assert_eq!(back, d);
+    }
+
+    #[test]
+    fn opaque_strokes_cost_no_extra_bytes() {
+        let stroke = |opacity| Doc {
+            actions: vec![Action {
+                t: 5,
+                op: Op::Stroke { color: [1, 2, 3], width: 16, points: vec![(0, 0), (16, 16)], eraser: false, opacity },
+            }],
+            ..Doc::new(10, 10, [255, 255, 255])
+        };
+        let raw = |d: &Doc| miniz_oxide::inflate::decompress_to_vec(&encode(d)[5..]).unwrap();
+        assert_eq!(raw(&stroke(200)).len(), raw(&stroke(255)).len() + 1);
+    }
+
+    #[test]
+    fn decodes_v1() {
+        let mut p = Vec::new();
+        put(&mut p, 100);
+        put(&mut p, 50);
+        p.extend_from_slice(&[255, 255, 255]);
+        put(&mut p, 2);
+        p.push(0);
+        put(&mut p, zz(1000));
+        p.extend_from_slice(&[10, 20, 30]);
+        put(&mut p, 64);
+        put(&mut p, 2);
+        for v in [16, 32, 16, 0] {
+            put(&mut p, zz(v));
+        }
+        p.push(1);
+        put(&mut p, zz(5));
+        p.extend_from_slice(&[0, 0, 0]);
+        put(&mut p, 16);
+        put(&mut p, 1);
+        put(&mut p, zz(8));
+        put(&mut p, zz(8));
+        let mut bytes = MAGIC.to_vec();
+        bytes.push(1);
+        bytes.extend(miniz_oxide::deflate::compress_to_vec(&p, 9));
+        let d = decode(&bytes).unwrap();
+        assert_eq!((d.width, d.height), (100, 50));
+        assert_eq!(
+            d.actions,
+            vec![
+                Action {
+                    t: 1000,
+                    op: Op::Stroke { color: [10, 20, 30], width: 64, points: vec![(16, 32), (32, 32)], eraser: false, opacity: 255 },
+                },
+                Action { t: 1005, op: Op::Stroke { color: [0, 0, 0], width: 16, points: vec![(8, 8)], eraser: true, opacity: 255 } },
+            ]
+        );
     }
 }

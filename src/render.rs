@@ -28,9 +28,16 @@ pub fn svg(doc: &Doc) -> String {
         }
         let c = color_hex(s.color);
         let w = s.width as f64 / 16.0;
+        let alpha = |attr: &str| {
+            if s.opacity < 255 {
+                format!(" {attr}=\"{}\"", s.opacity as f64 / 255.0)
+            } else {
+                String::new()
+            }
+        };
         if is_dot(s) {
             let (x, y) = s.points[0];
-            let _ = writeln!(o, "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{c}\"/>", f(x), f(y), w / 2.0);
+            let _ = writeln!(o, "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{c}\"{}/>", f(x), f(y), w / 2.0, alpha("fill-opacity"));
         } else {
             let mut d = String::new();
             for (i, &(x, y)) in s.points.iter().enumerate() {
@@ -38,7 +45,8 @@ pub fn svg(doc: &Doc) -> String {
             }
             let _ = writeln!(
                 o,
-                "<path d=\"{d}\" fill=\"none\" stroke=\"{c}\" stroke-width=\"{w}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+                "<path d=\"{d}\" fill=\"none\" stroke=\"{c}\" stroke-width=\"{w}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"{}/>",
+                alpha("stroke-opacity")
             );
         }
     }
@@ -63,7 +71,7 @@ pub fn raster(doc: &Doc, scale: f32) -> Result<Pixmap, String> {
             continue;
         }
         let mut paint = Paint::default();
-        paint.set_color_rgba8(s.color[0], s.color[1], s.color[2], 255);
+        paint.set_color_rgba8(s.color[0], s.color[1], s.color[2], s.opacity);
         paint.anti_alias = true;
         let w = s.width as f32 / 16.0;
         let p = |v: i32| v as f32 / 16.0;

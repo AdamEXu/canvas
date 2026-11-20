@@ -69,6 +69,7 @@ input[type=range]{width:110px;accent-color:var(--accent);margin:0 6px 0 0}
   </div>
   <div class="grp" id="sws"><input type="color" id="well" value="#000000" title="Color"></div>
   <div class="grp"><input type="range" id="size" min="1" max="64" value="6" title="Brush Size ([ and ])"><span class="ro" id="sizeRo">6 px</span></div>
+  <div class="grp"><input type="range" id="opac" min="1" max="100" value="100" title="Opacity (1 to 9, 0)"><span class="ro" id="opacRo">100%</span></div>
   <div class="grp">
     <button class="b" id="undoB" title="Undo (⌘Z)" disabled><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></svg></button>
     <button class="b" id="redoB" title="Redo (⇧⌘Z)" disabled><svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13"/></svg></button>
@@ -94,23 +95,26 @@ const $=s=>document.querySelector(s);
 const base=$('#base'),over=$('#over'),frame=$('#frame'),ws=$('#ws'),outline=$('#outline');
 const bctx=base.getContext('2d'),octx=over.getContext('2d');
 let dpr=Math.max(1,window.devicePixelRatio||1);
-const S={doc:null,version:0,log:[],eff:[],redo:[],pending:[],initW:800,initH:600,bg:'#ffffff',w:800,h:600,zoom:1,tool:'brush',color:'#000000',size:6,playing:false,baking:false,bakeToken:0,loaded:false,polling:false,again:false};
+const S={doc:null,version:0,log:[],eff:[],redo:[],pending:[],initW:800,initH:600,bg:'#ffffff',w:800,h:600,zoom:1,tool:'brush',color:'#000000',size:6,opacity:100,playing:false,baking:false,bakeToken:0,loaded:false,polling:false,again:false};
 const SWATCHES=['#000000','#ffffff','#ff3b30','#ff9500','#ffcc00','#34c759','#007aff','#8e8e93'];
 
 function prep(c){c.setTransform(dpr,0,0,dpr,0,0);c.lineCap='round';c.lineJoin='round'}
 function applyZoom(){frame.style.width=S.w*S.zoom+'px';frame.style.height=S.h*S.zoom+'px';$('#zoom').textContent=Math.round(S.zoom*100)+'%';$('#dims').textContent=S.w+' × '+S.h}
 function sizeCanvas(w,h){S.w=w;S.h=h;for(const c of [base,over]){c.width=Math.max(1,Math.round(w*dpr));c.height=Math.max(1,Math.round(h*dpr))}prep(bctx);prep(octx);applyZoom()}
 function fillBg(){bctx.fillStyle=S.bg;bctx.fillRect(0,0,S.w,S.h)}
-function drawStroke(c,s,dx,dy){const p=s.points;if(!p||!p.length)return;c.strokeStyle=c.fillStyle=s.eraser?S.bg:s.color;c.lineWidth=s.width;
-  if(p.length===1){c.beginPath();c.arc(p[0][0]+dx,p[0][1]+dy,s.width/2,0,Math.PI*2);c.fill();return}
-  c.beginPath();c.moveTo(p[0][0]+dx,p[0][1]+dy);for(let i=1;i<p.length;i++)c.lineTo(p[i][0]+dx,p[i][1]+dy);c.stroke()}
+function alphaOf(s){const o=s.opacity;return o==null?1:Math.min(1,Math.max(0,+o))}
+function q255(o){return Math.round(o*255)}
+function drawStroke(c,s,dx,dy){const p=s.points;if(!p||!p.length)return;c.strokeStyle=c.fillStyle=s.eraser?S.bg:s.color;c.lineWidth=s.width;c.globalAlpha=alphaOf(s);
+  if(p.length===1){c.beginPath();c.arc(p[0][0]+dx,p[0][1]+dy,s.width/2,0,Math.PI*2);c.fill()}
+  else{c.beginPath();c.moveTo(p[0][0]+dx,p[0][1]+dy);for(let i=1;i<p.length;i++)c.lineTo(p[i][0]+dx,p[i][1]+dy);c.stroke()}
+  c.globalAlpha=1}
 function layout(list){let w=S.initW,h=S.initH,ox=0,oy=0,items=[];
   for(const a of list){if(a.type==='stroke')items.push([a,ox,oy]);else if(a.type==='resize'){w+=a.left+a.right;h+=a.top+a.bottom;ox+=a.left;oy+=a.top}else if(a.type==='clear')items=[]}
   return{w:Math.max(1,Math.round(w)),h:Math.max(1,Math.round(h)),items:items.map(([s,x,y])=>({s,dx:ox-x,dy:oy-y}))}}
 function rebake(){if(S.playing)return;const tok=++S.bakeToken;const L=layout(S.eff.concat(S.pending));sizeCanvas(L.w,L.h);fillBg();
   const it=L.items;if(it.length<=20000){for(const x of it)drawStroke(bctx,x.s,x.dx,x.dy);S.baking=false;return}
   S.baking=true;let i=0;const step=()=>{if(tok!==S.bakeToken)return;const end=Math.min(it.length,i+6000);for(;i<end;i++)drawStroke(bctx,it[i].s,it[i].dx,it[i].dy);if(i<it.length)requestAnimationFrame(step);else{S.baking=false;if(S.dirty){S.dirty=false;rebake()}}};step()}
-function same(p,a){const x=p.points,y=a.points;if(p.color!==a.color||+p.width!==+a.width||!!p.eraser!==!!a.eraser||!y||x.length!==y.length)return false;
+function same(p,a){const x=p.points,y=a.points;if(p.color!==a.color||+p.width!==+a.width||!!p.eraser!==!!a.eraser||q255(alphaOf(p))!==q255(alphaOf(a))||!y||x.length!==y.length)return false;
   const n=x.length-1;return Math.abs(x[0][0]-y[0][0])<1e-3&&Math.abs(x[0][1]-y[0][1])<1e-3&&Math.abs(x[n][0]-y[n][0])<1e-3&&Math.abs(x[n][1]-y[n][1])<1e-3}
 function ingest(entries,forceFull){let full=!!forceFull;const fresh=[];
   for(const a of entries){S.log.push(a);
@@ -156,7 +160,7 @@ function pinchMid(){const v=[...touches.values()];return[(v[0].x+v[1].x)/2,(v[0]
 over.addEventListener('pointerdown',e=>{if(S.playing)return;
   if(e.pointerType==='touch'){touches.set(e.pointerId,{x:e.clientX,y:e.clientY});if(touches.size===2){cur=null;clearOver();pinch={d:pinchDist(),z:S.zoom};return}if(touches.size>2)return}
   if(e.pointerType==='mouse'&&e.button!==0)return;
-  over.setPointerCapture(e.pointerId);cur={id:e.pointerId,s:{type:'stroke',color:S.color,width:S.size,points:[],eraser:S.tool==='eraser'}};prep(octx);clearOver();addPt(e)});
+  over.setPointerCapture(e.pointerId);cur={id:e.pointerId,s:{type:'stroke',color:S.color,width:S.size,opacity:q255(S.opacity/100)/255,points:[],eraser:S.tool==='eraser'}};over.style.opacity=cur.s.opacity;prep(octx);clearOver();addPt(e)});
 over.addEventListener('pointermove',e=>{if(touches.has(e.pointerId)){touches.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pinch&&touches.size===2){const m=pinchMid();setZoom(pinch.z*pinchDist()/pinch.d,m[0],m[1]);return}}
   if(!cur||e.pointerId!==cur.id)return;const evs=e.getCoalescedEvents?e.getCoalescedEvents():[];for(const ev of evs.length?evs:[e])addPt(ev)});
 function endPtr(e){touches.delete(e.pointerId);if(pinch&&touches.size<2)pinch=null;if(!cur||e.pointerId!==cur.id)return;const s=cur.s;cur=null;clearOver();
@@ -174,12 +178,14 @@ function showOutline(d){const z=S.zoom,w=S.w+d.left+d.right,hh=S.h+d.top+d.botto
 
 function setTool(t){S.tool=t;$('#brushB').classList.toggle('on',t==='brush');$('#eraserB').classList.toggle('on',t==='eraser')}
 function setSize(v){S.size=Math.min(64,Math.max(1,Math.round(v)));$('#size').value=S.size;$('#sizeRo').textContent=S.size+' px'}
+function setOpacity(v){S.opacity=Math.min(100,Math.max(1,Math.round(v)));$('#opac').value=S.opacity;$('#opacRo').textContent=S.opacity+'%'}
 function setColor(c){S.color=c.toLowerCase();$('#well').value=S.color;document.querySelectorAll('.sw').forEach(b=>b.classList.toggle('on',b.dataset.c===S.color));if(S.tool==='eraser')setTool('brush')}
 const swsEl=$('#sws'),well=$('#well');
 for(const c of SWATCHES){const b=document.createElement('button');b.className='sw';b.dataset.c=c;b.style.background=c;b.title=c;b.onclick=()=>setColor(c);swsEl.insertBefore(b,well)}
 well.addEventListener('input',()=>setColor(well.value));
 $('#brushB').onclick=()=>setTool('brush');$('#eraserB').onclick=()=>setTool('eraser');
 $('#size').addEventListener('input',e=>setSize(+e.target.value));
+$('#opac').addEventListener('input',e=>setOpacity(+e.target.value));
 $('#undoB').onclick=()=>post({type:'undo'});$('#redoB').onclick=()=>post({type:'redo'});$('#clearB').onclick=()=>post({type:'clear'});
 
 function download(url,name){const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove()}
@@ -220,10 +226,11 @@ addEventListener('keydown',e=>{const m=e.metaKey||e.ctrlKey,k=e.key.toLowerCase(
   if(m&&(k==='0'||k==='1')){e.preventDefault();if(k==='0')fit(false);else{S.zoom=1;applyZoom()}return}
   if(m||e.altKey)return;
   if(e.key==='Escape'){closeMenu();if(S.playing)stopPlay();return}
+  if(/^[0-9]$/.test(e.key)&&!(e.target.closest&&e.target.closest('input,textarea,select'))){setOpacity(e.key==='0'?100:+e.key*10);return}
   if(k==='b')setTool('brush');else if(k==='e')setTool('eraser');
   else if(e.key==='[')setSize(S.size-(S.size>16?4:S.size>6?2:1));else if(e.key===']')setSize(S.size+(S.size>=16?4:S.size>=6?2:1))});
 
-setColor('#000000');setSize(6);sizeCanvas(S.w,S.h);fillBg();poll();
+setColor('#000000');setSize(6);setOpacity(100);sizeCanvas(S.w,S.h);fillBg();poll();
 </script>
 </body>
 </html>

@@ -69,38 +69,41 @@ fn base_url(a: &Args) -> String {
         .to_string()
 }
 
-fn http_err(e: ureq::Error) -> String {
-    match e {
-        ureq::Error::Status(code, r) => format!("HTTP {code}: {}", r.into_string().unwrap_or_default()),
-        e => e.to_string(),
+fn read_response(r: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<Vec<u8>, String> {
+    let r = r.map_err(|e| e.to_string())?;
+    let status = r.status().as_u16();
+    let mut b = Vec::new();
+    r.into_body().into_reader().read_to_end(&mut b).map_err(|e| e.to_string())?;
+    if status >= 400 {
+        return Err(format!("HTTP {status}: {}", String::from_utf8_lossy(&b)));
     }
+    Ok(b)
 }
 
 fn get_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let r = ureq::get(url).call().map_err(http_err)?;
-    let mut b = Vec::new();
-    r.into_reader().read_to_end(&mut b).map_err(|e| e.to_string())?;
-    Ok(b)
+    read_response(ureq::get(url).config().http_status_as_error(false).build().call())
 }
 
 fn get_json(url: &str) -> Result<Value, String> {
     serde_json::from_slice(&get_bytes(url)?).map_err(|e| e.to_string())
 }
 
-fn post_json(url: &str, body: &Value) -> Result<Value, String> {
+fn post(url: &str, content_type: &str, body: &[u8]) -> Result<Value, String> {
     let r = ureq::post(url)
-        .set("Content-Type", "application/json")
-        .send_string(&body.to_string())
-        .map_err(http_err)?;
-    serde_json::from_str(&r.into_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .header("Content-Type", content_type)
+        .send(body);
+    serde_json::from_slice(&read_response(r)?).map_err(|e| e.to_string())
+}
+
+fn post_json(url: &str, body: &Value) -> Result<Value, String> {
+    post(url, "application/json", body.to_string().as_bytes())
 }
 
 fn post_bytes(url: &str, body: &[u8]) -> Result<Value, String> {
-    let r = ureq::post(url)
-        .set("Content-Type", "application/octet-stream")
-        .send_bytes(body)
-        .map_err(http_err)?;
-    serde_json::from_str(&r.into_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    post(url, "application/octet-stream", body)
 }
 
 fn print(v: &Value) {
